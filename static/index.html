@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>YPanel</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f8cff'/><text x='16' y='22' font-size='17' font-family='Arial' font-weight='700' fill='white' text-anchor='middle'>Y</text></svg>">
+<link rel="stylesheet" href="/static/style.css?v=3">
+<script src="/static/qrcode.js?v=3"></script>
+<script src="/static/app.js?v=3"></script>
+<script defer src="/static/alpine.min.js"></script>
+</head>
+<body x-data="panel()">
+
+<!-- ================= LOGIN ================= -->
+<div class="login" x-show="!authed" x-cloak>
+  <form class="card" @submit.prevent="doLogin">
+    <div class="brand" style="padding:0 0 18px">⬢ <span>Y<b>Panel</b></span></div>
+    <div class="field"><label>Username</label><input x-model="login.username" autocomplete="username" required></div>
+    <div class="field"><label>Password</label><input type="password" x-model="login.password" autocomplete="current-password" required></div>
+    <div class="field" x-show="need2fa" x-cloak><label>2FA code (or recovery code)</label>
+      <input id="code2fa" class="mono" x-model="login.code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+    <button class="btn primary" style="width:100%;justify-content:center" :disabled="busy">Sign in</button>
+  </form>
+</div>
+
+<!-- ================= APP ================= -->
+<div class="shell" x-show="authed" x-cloak>
+  <div class="backdrop" :class="{show:menuOpen}" @click="menuOpen=false"></div>
+  <aside :class="{open:menuOpen}">
+    <div class="brand">⬢ <span>Y<b>Panel</b></span></div>
+    <template x-for="n in [['dashboard','◧','Dashboard',1],['sites','🌐','Websites'],['databases','🛢','Databases'],['files','📁','File Manager'],['cron','⏱','Cron Jobs'],['backups','💾','Backups'],['installers','⚡','Installers'],['mail','✉','Email',1],['dns','☁','DNS',1],['firewall','🛡','Firewall',1],['users','👥','Users',1],['settings','⚙',isAdmin?'Settings':'Account']]">
+      <button class="nav" x-show="!n[3] || isAdmin" :class="{active: page===n[0] || (n[0]==='sites' && page==='site')}" @click="go(n[0])">
+        <span class="ic" x-text="n[1]"></span><span x-text="n[2]"></span>
+      </button>
+    </template>
+    <a class="nav" href="/phpmyadmin/" target="_blank"><span class="ic">🗄</span>phpMyAdmin ↗</a>
+    <a class="nav" href="/webmail/" target="_blank" x-show="isAdmin && mail.installed"><span class="ic">📨</span>Webmail ↗</a>
+    <div class="spacer"></div>
+    <div class="muted small" style="padding:0 12px 8px">Signed in as <b x-text="me"></b></div>
+    <button class="nav" @click="logout()"><span class="ic">⎋</span>Logout</button>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <button class="burger" @click="menuOpen=!menuOpen">☰</button>
+      <h2 x-text="page==='site' && site ? site.domain : (page==='settings' && !isAdmin ? 'Account' : titles[page])"></h2>
+      <div class="spin" x-show="busy" x-cloak></div>
+    </header>
+
+    <!-- ========== DASHBOARD ========== -->
+    <section x-show="page==='dashboard'">
+      <template x-if="stats">
+        <div>
+          <div class="grid g4">
+            <div class="card stat"><div class="k">CPU</div><div class="v" x-text="stats.cpu.toFixed(0)+'%'"></div>
+              <div class="bar"><i :class="barClass(stats.cpu)" :style="`width:${stats.cpu}%`"></i></div>
+              <div class="muted small mt" x-text="`${stats.cores} cores · load ${stats.load.map(l=>l.toFixed(2)).join(' ')}`"></div></div>
+            <div class="card stat"><div class="k">Memory</div><div class="v" x-text="stats.mem.percent.toFixed(0)+'%'"></div>
+              <div class="bar"><i :class="barClass(stats.mem.percent)" :style="`width:${stats.mem.percent}%`"></i></div>
+              <div class="muted small mt" x-text="`${fmtBytes(stats.mem.used)} / ${fmtBytes(stats.mem.total)} · swap ${fmtBytes(stats.swap.used)}`"></div></div>
+            <div class="card stat"><div class="k">Disk /</div><div class="v" x-text="stats.disk.percent.toFixed(0)+'%'"></div>
+              <div class="bar"><i :class="barClass(stats.disk.percent)" :style="`width:${stats.disk.percent}%`"></i></div>
+              <div class="muted small mt" x-text="`${fmtBytes(stats.disk.used)} / ${fmtBytes(stats.disk.total)}`"></div></div>
+            <div class="card stat"><div class="k">Server</div><div class="v" style="font-size:17px" x-text="stats.hostname"></div>
+              <div class="muted small" x-text="stats.os"></div>
+              <div class="muted small" x-text="`up ${fmtUptime(stats.uptime)} · ${stats.sites} sites · ${stats.dbs} DBs`"></div></div>
+          </div>
+          <div class="grid g2">
+            <div class="card"><h3>Services</h3>
+              <div class="table-wrap"><table><tbody>
+                <template x-for="s in services" :key="s.name"><tr>
+                  <td class="mono" x-text="s.name"></td>
+                  <td><span class="badge" :class="s.state==='active'?'ok':'err'" x-text="s.state"></span></td>
+                  <td><div class="actions">
+                    <button class="btn sm" @click="svc(s.name,'restart')">Restart</button>
+                    <button class="btn sm" x-show="s.state!=='active'" @click="svc(s.name,'start')">Start</button>
+                    <button class="btn sm danger" x-show="s.state==='active'" @click="svc(s.name,'stop')">Stop</button>
+                  </div></td></tr></template>
+              </tbody></table></div>
+            </div>
+            <div class="card"><h3>Top processes (RAM)</h3>
+              <div class="table-wrap"><table><tbody>
+                <template x-for="p in procs.slice(0,10)" :key="p.pid"><tr>
+                  <td class="mono small" x-text="p.name"></td><td class="muted small hide-sm" x-text="p.user"></td>
+                  <td class="small" x-text="fmtBytes(p.rss)"></td>
+                  <td><div class="actions"><button class="btn sm" @click="killProc(p)">✕</button></div></td></tr></template>
+              </tbody></table></div>
+            </div>
+          </div>
+          <div class="card"><h3>Recent activity</h3>
+            <div class="table-wrap"><table><tbody>
+              <template x-for="a in activity" :key="a.id"><tr>
+                <td class="muted small" style="white-space:nowrap" x-text="fmtDate(a.ts)"></td>
+                <td class="mono small" x-text="a.action"></td><td class="small" x-text="a.detail"></td></tr></template>
+            </tbody></table></div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ========== SITES ========== -->
+    <section x-show="page==='sites'">
+      <div class="row between" style="margin-bottom:14px">
+        <span class="muted" x-text="sites.length+' website(s)'"></span>
+        <button class="btn primary" x-show="isAdmin" @click="showSiteForm=!showSiteForm">＋ New website</button>
+      </div>
+      <form class="card" x-show="showSiteForm" x-cloak @submit.prevent="createSite">
+        <h3>Create website</h3>
+        <div class="grid g2">
+          <div class="field"><label>Domain</label><input x-model="siteForm.domain" placeholder="example.com" required></div>
+          <div class="field"><label>PHP version</label>
+            <select x-model="siteForm.php"><template x-for="v in phpVersions"><option :value="v" x-text="'PHP '+v" :selected="v===siteForm.php"></option></template></select></div>
+        </div>
+        <div class="row" style="gap:18px;margin-bottom:12px">
+          <label class="check"><input type="checkbox" x-model="siteForm.www"> Include www.</label>
+          <label class="check"><input type="checkbox" x-model="siteForm.cloudflare_dns"> Create Cloudflare DNS</label>
+          <label class="check" x-show="siteForm.cloudflare_dns"><input type="checkbox" x-model="siteForm.cf_proxied"> Proxied (orange cloud)</label>
+          <label class="check"><input type="checkbox" x-model="siteForm.ssl"> Issue SSL now</label>
+          <select x-show="siteForm.ssl" x-model="siteForm.ssl_method" style="width:auto">
+            <option value="http">HTTP challenge</option><option value="cloudflare">Cloudflare DNS challenge</option></select>
+        </div>
+        <button class="btn primary" :disabled="busy">Create</button>
+        <span class="muted small" style="margin-left:8px">Creates a Linux user, PHP-FPM pool &amp; nginx vhost.</span>
+      </form>
+      <div class="card" style="padding:0">
+        <div class="table-wrap" style="border:0"><table>
+          <thead><tr><th>Domain</th><th>PHP</th><th>SSL</th><th class="hide-sm">User</th><th class="hide-sm">Created</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="s in sites" :key="s.id"><tr>
+              <td><a href="#" @click.prevent="openSite(s.id)" x-text="s.domain"></a></td>
+              <td x-text="s.php"></td>
+              <td><span class="badge" :class="s.ssl?'ok':'warn'" x-text="s.ssl?'HTTPS':'HTTP'"></span></td>
+              <td class="mono small hide-sm" x-text="s.user"></td>
+              <td class="muted small hide-sm" x-text="fmtDate(s.created)"></td>
+              <td><div class="actions"><a class="btn sm" :href="(s.ssl?'https://':'http://')+s.domain" target="_blank">Open ↗</a>
+                <button class="btn sm" @click="openSite(s.id)">Manage</button></div></td>
+            </tr></template>
+            <tr x-show="!sites.length"><td colspan="6" class="muted">No websites yet.</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ========== SITE DETAIL ========== -->
+    <section x-show="page==='site'">
+      <template x-if="site">
+        <div>
+          <button class="btn sm" @click="go('sites')" style="margin-bottom:12px">← All websites</button>
+          <div class="tabs">
+            <template x-for="t in [['overview','Overview'],['stats','Stats'],['php','PHP'],['cache','Cache'],['nginx','Nginx',1],['sftp','SFTP'],['logs','Logs'],['danger','Delete',1]]">
+              <button class="tab" x-show="!t[2] || isAdmin" :class="{active:siteTab===t[0]}" @click="siteTabOpen(t[0])" x-text="t[1]"></button>
+            </template>
+          </div>
+
+          <div x-show="siteTab==='overview'">
+            <div class="grid g2">
+              <div class="card"><h3>Details</h3>
+                <table><tbody>
+                  <tr><td class="muted">Domain</td><td><a :href="(site.ssl?'https://':'http://')+site.domain" target="_blank" x-text="site.domain"></a></td></tr>
+                  <tr><td class="muted">System user</td><td class="mono" x-text="site.user"></td></tr>
+                  <tr><td class="muted">Document root</td><td class="mono small" x-text="site.docroot"></td></tr>
+                  <tr><td class="muted">PHP</td><td x-text="site.php"></td></tr>
+                  <tr><td class="muted">Databases</td><td class="mono small" x-text="site.dbs.map(d=>d.name).join(', ')||'—'"></td></tr>
+                  <tr><td class="muted">Disk usage</td><td><span x-text="usage===null?'':fmtBytes(usage)"></span>
+                    <button class="btn sm" x-show="usage===null" @click="loadUsage()">Calculate</button></td></tr>
+                </tbody></table>
+                <div class="row mt">
+                  <button class="btn sm" @click="fm.site_id=site.id; fm.path='public_html'; go('files')">📁 Files</button>
+                  <button class="btn sm" @click="bkSite=site.id; go('backups')">💾 Backups</button>
+                  <button class="btn sm" @click="cronSite=site.id; cronForm.site_id=site.id; go('cron')">⏱ Cron</button>
+                </div>
+              </div>
+              <div class="card"><h3>SSL certificate</h3>
+                <p x-show="site.ssl && site.cert"><span class="badge ok">Active</span> <span class="muted small" x-text="'expires '+(site.cert&&site.cert.expires)"></span></p>
+                <p x-show="!site.ssl" class="muted">No certificate — site is served over HTTP.</p>
+                <div class="field"><label>Validation method</label>
+                  <select x-model="sslMethod"><option value="http">HTTP-01 (DNS must point to this server)</option>
+                    <option value="cloudflare">Cloudflare DNS-01 (works behind orange cloud)</option></select></div>
+                <div class="row">
+                  <button class="btn primary" @click="issueSsl()" :disabled="busy" x-text="site.ssl?'Re-issue / renew':'Issue Let\'s Encrypt SSL'"></button>
+                  <button class="btn danger" x-show="site.ssl" @click="removeSsl()">Remove</button>
+                </div>
+                <h3 class="mt" style="margin-top:20px">Cloudflare DNS</h3>
+                <p class="muted small">Point <b x-text="site.domain"></b><span x-show="site.www"> + www</span> to this server.</p>
+                <div class="row"><button class="btn sm" @click="cfDns(true)">A record (proxied)</button>
+                  <button class="btn sm" @click="cfDns(false)">A record (DNS only)</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div x-show="siteTab==='php'" class="card">
+            <h3>PHP version</h3>
+            <div class="row" style="margin-bottom:20px">
+              <template x-for="v in site.php_versions"><button class="btn" :class="{primary:v===site.php}" @click="v!==site.php && changePhp(v)" x-text="'PHP '+v"></button></template>
+            </div>
+            <h3>PHP settings (pool)</h3>
+            <div class="grid g4">
+              <div class="field"><label>memory_limit</label><input x-model="ini.memory_limit"></div>
+              <div class="field"><label>upload_max_filesize</label><input x-model="ini.upload_max_filesize"></div>
+              <div class="field"><label>post_max_size</label><input x-model="ini.post_max_size"></div>
+              <div class="field"><label>max_execution_time (s)</label><input type="number" x-model="ini.max_execution_time"></div>
+              <div class="field"><label>max_input_time (s)</label><input type="number" x-model="ini.max_input_time"></div>
+              <div class="field"><label>max_input_vars</label><input type="number" x-model="ini.max_input_vars"></div>
+              <div class="field"><label>pm.max_children (workers)</label><input type="number" x-model="ini.max_children"></div>
+            </div>
+            <div class="row" style="gap:18px;margin-bottom:14px">
+              <label class="check" x-show="isAdmin"><input type="checkbox" x-model="ini.open_basedir"> open_basedir isolation</label>
+              <label class="check"><input type="checkbox" x-model="ini.display_errors"> display_errors</label>
+            </div>
+            <button class="btn primary" @click="saveIni()" :disabled="busy">Save &amp; reload PHP-FPM</button>
+          </div>
+
+          <div x-show="siteTab==='nginx'" class="card">
+            <h3>Custom nginx directives</h3>
+            <p class="muted small">Included inside this site's <code>server {}</code> block, before the default locations. Tested with <code>nginx -t</code> — rolled back automatically if invalid.</p>
+            <textarea class="code" x-model="nginxCustom" spellcheck="false" placeholder="location ^~ /manga/ { try_files $uri /index.php?$args; }"></textarea>
+            <div class="row mt"><button class="btn primary" @click="saveNginx()" :disabled="busy">Save &amp; reload nginx</button></div>
+            <details class="mt"><summary class="muted small" style="cursor:pointer">Generated vhost (read-only)</summary><pre class="mt" x-text="vhostPreview"></pre></details>
+          </div>
+
+
+          <div x-show="siteTab==='stats'">
+            <div class="card">
+              <div class="row between">
+                <div class="row">
+                  <template x-for="d in [[1,'Today'],[7,'7 days'],[14,'14 days'],[30,'30 days']]">
+                    <button class="btn sm" :class="{primary:statsDays===d[0]}" @click="statsDays=d[0]; loadStats()" x-text="d[1]"></button></template>
+                </div>
+                <button class="btn sm" @click="loadStats(true)">⟳ Refresh</button>
+              </div>
+              <p class="muted small" style="margin:8px 0 0">From nginx logs on this server — pages served from Cloudflare's cache are not counted.</p>
+            </div>
+            <template x-if="tstats"><div>
+              <div class="grid g4">
+                <div class="card stat"><div class="k">Pageviews</div><div class="v" x-text="tstats.totals.pageviews.toLocaleString()"></div></div>
+                <div class="card stat"><div class="k">Unique visitors</div><div class="v" x-text="tstats.totals.visitors.toLocaleString()"></div></div>
+                <div class="card stat"><div class="k">Bandwidth</div><div class="v" x-text="fmtBytes(tstats.totals.bytes)"></div></div>
+                <div class="card stat"><div class="k">Bot hits</div><div class="v" x-text="tstats.totals.bots.toLocaleString()"></div>
+                  <div class="muted small" x-text="`${tstats.totals.hits.toLocaleString()} requests total`"></div></div>
+              </div>
+              <div class="card" x-show="tstats.daily.length>1"><h3>Pageviews per day</h3>
+                <div style="display:flex;align-items:flex-end;gap:6px;height:160px;padding-top:10px">
+                  <template x-for="d in tstats.daily" :key="d.day">
+                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0" :title="`${d.day}: ${d.pageviews} pageviews, ${d.visitors} visitors`">
+                      <div class="small muted" x-text="d.pageviews>=1000?(d.pageviews/1000).toFixed(1)+'k':d.pageviews"></div>
+                      <div :style="`width:100%;max-width:42px;background:var(--accent);border-radius:6px 6px 0 0;height:${Math.max(2, d.pageviews/statMax('pageviews')*120)}px`"></div>
+                      <div class="small muted" style="white-space:nowrap" x-text="d.day.slice(5)"></div>
+                    </div></template>
+                </div>
+              </div>
+              <div class="grid g2">
+                <div class="card"><h3>Top pages</h3><div class="table-wrap"><table><tbody>
+                  <template x-for="p in tstats.top_pages"><tr><td class="mono small" style="word-break:break-all" x-text="p[0]"></td><td class="small" x-text="p[1]"></td></tr></template>
+                  <tr x-show="!tstats.top_pages.length"><td class="muted">No data</td></tr></tbody></table></div></div>
+                <div class="card"><h3>Referrers</h3><div class="table-wrap"><table><tbody>
+                  <template x-for="r in tstats.top_referrers"><tr><td class="small" x-text="r[0]"></td><td class="small" x-text="r[1]"></td></tr></template>
+                  <tr x-show="!tstats.top_referrers.length"><td class="muted">No external referrers</td></tr></tbody></table></div></div>
+                <div class="card"><h3>Bots &amp; crawlers</h3><div class="table-wrap"><table><tbody>
+                  <template x-for="b in tstats.bots"><tr><td class="small" x-text="b[0]"></td><td class="small" x-text="b[1]"></td></tr></template>
+                  <tr x-show="!tstats.bots.length"><td class="muted">None</td></tr></tbody></table></div></div>
+                <div class="card"><h3>404 — not found</h3><div class="table-wrap"><table><tbody>
+                  <template x-for="p in tstats.not_found"><tr><td class="mono small" style="word-break:break-all" x-text="p[0]"></td><td class="small" x-text="p[1]"></td></tr></template>
+                  <tr x-show="!tstats.not_found.length"><td class="muted">None 🎉</td></tr></tbody></table></div></div>
+                <div class="card"><h3>Top visitor IPs</h3><div class="table-wrap"><table><tbody>
+                  <template x-for="p in tstats.top_ips"><tr><td class="mono small" x-text="p[0]"></td><td class="small" x-text="p[1]"></td></tr></template></tbody></table></div></div>
+                <div class="card"><h3>Status codes</h3>
+                  <div class="row"><template x-for="(n, k) in tstats.status"><span class="badge" :class="k==='2xx'?'ok':(k==='5xx'?'err':'warn')" x-text="`${k}: ${n}`"></span></template></div>
+                  <p class="muted small mt" x-show="tstats.truncated">Large logs — only the first 5M lines were analysed.</p></div>
+              </div>
+            </div></template>
+          </div>
+
+          <div x-show="siteTab==='cache'" class="card">
+            <template x-if="rcache"><div>
+              <div class="row between"><h3 style="margin:0">Redis object cache</h3>
+                <span class="badge" :class="rcache.enabled?'ok':'warn'" x-text="rcache.enabled?'Enabled':'Disabled'"></span></div>
+              <p class="muted small">A private Redis user for this site — it can only read/write keys starting with <code x-text="rcache.prefix"></code>.</p>
+              <p class="badge err" x-show="!rcache.available">Redis is not installed — re-run install.sh</p>
+              <div x-show="!rcache.enabled"><button class="btn primary" @click="rcacheEnable()" :disabled="busy || !rcache.available">Enable Redis</button></div>
+              <div x-show="rcache.enabled">
+                <table class="mt"><tbody>
+                  <tr><td class="muted">Host</td><td class="mono" x-text="rcache.host+':'+rcache.port"></td></tr>
+                  <tr><td class="muted">Username</td><td class="mono" x-text="rcache.username"></td></tr>
+                  <tr><td class="muted">Password</td><td class="mono small" style="word-break:break-all;user-select:all" x-text="rcache.password"></td></tr>
+                  <tr><td class="muted">Key prefix</td><td class="mono" x-text="rcache.prefix"></td></tr>
+                  <tr x-show="rcache.wordpress"><td class="muted">WordPress</td><td><span class="badge" :class="rcache.wp_active?'ok':'warn'" x-text="rcache.wp_active?'Connected':'Not connected'"></span></td></tr>
+                </tbody></table>
+                <div class="row mt">
+                  <button class="btn primary" x-show="rcache.wordpress && !rcache.wp_active" @click="rcacheWp()" :disabled="busy">Connect WordPress (one click)</button>
+                  <button class="btn" @click="rcacheFlush()">Flush cache</button>
+                  <button class="btn danger" @click="rcacheDisable()">Disable</button>
+                </div>
+                <p class="muted small mt" x-show="!rcache.wordpress">For a custom PHP app, use phpredis: <code>$r->auth([user, pass])</code> and prefix every key with <code x-text="rcache.prefix"></code>.</p>
+              </div>
+            </div></template>
+          </div>
+
+          <div x-show="siteTab==='sftp'" class="card">
+            <template x-if="sftp"><div>
+              <div class="row between"><h3 style="margin:0">SFTP access</h3>
+                <span class="badge" :class="sftp.enabled?'ok':'warn'" x-text="sftp.enabled?'Enabled':'Disabled'"></span></div>
+              <p class="muted small">Login with the site user, jailed to <code>/home/<span x-text="site.domain"></span></code>. Use FileZilla / WinSCP / Termius with protocol <b>SFTP</b>.</p>
+              <p class="badge err" x-show="!sftp.ready">SFTP is not configured on the server — re-run install.sh</p>
+              <table class="mt"><tbody>
+                <tr><td class="muted">Host</td><td class="mono" x-text="sftp.host||'server IP'"></td></tr>
+                <tr><td class="muted">Port</td><td class="mono" x-text="sftp.port"></td></tr>
+                <tr><td class="muted">Username</td><td class="mono" x-text="sftp.user"></td></tr>
+                <tr><td class="muted">Folder</td><td class="mono" x-text="sftp.path"></td></tr>
+              </tbody></table>
+              <div class="card secret mt" x-show="sftpCreds" x-cloak><template x-if="sftpCreds"><div class="mono small">
+                <b>Save it — shown once:</b><br>user <code x-text="sftpCreds.user"></code> · password <code x-text="sftpCreds.password"></code></div></template></div>
+              <div class="field mt"><label>Password (empty = generate)</label><input class="mono" x-model="sftpPw" minlength="10" autocomplete="new-password"></div>
+              <div class="field"><label>SSH public keys (optional, one per line)</label>
+                <textarea class="code" style="min-height:90px" x-model="sftpKeys" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea></div>
+              <div class="row">
+                <button class="btn primary" x-show="!sftp.enabled" @click="sftpEnable()" :disabled="busy || !sftp.ready">Enable SFTP</button>
+                <button class="btn" x-show="sftp.enabled" @click="sftpNewPw()">Set new password</button>
+                <button class="btn" x-show="sftp.enabled" @click="sftpSaveKeys()">Save keys</button>
+                <button class="btn danger" x-show="sftp.enabled" @click="sftpDisable()">Disable</button>
+              </div>
+            </div></template>
+          </div>
+          <div x-show="siteTab==='logs'" class="card">
+            <div class="row" style="margin-bottom:12px">
+              <select x-model="logKind" @change="loadLogs()" style="width:auto">
+                <option value="error">nginx error.log</option><option value="access">nginx access.log</option><option value="php">php-error.log</option></select>
+              <button class="btn sm" @click="loadLogs()">Refresh</button>
+            </div>
+            <pre x-text="logText"></pre>
+          </div>
+
+          <div x-show="siteTab==='danger'" class="card">
+            <h3>Delete website</h3>
+            <p class="muted">Removes the nginx vhost, PHP pool, SSL certificate, cron jobs and Linux user.</p>
+            <label class="check"><input type="checkbox" x-model="del.files"> Delete files (/home/<span x-text="site.domain"></span>)</label>
+            <label class="check mt"><input type="checkbox" x-model="del.dbs"> Drop linked databases</label>
+            <button class="btn danger mt" @click="deleteSite()">Delete <span x-text="site.domain"></span></button>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ========== DATABASES ========== -->
+    <section x-show="page==='databases'">
+      <form class="card" @submit.prevent="createDb">
+        <h3>New database</h3>
+        <div class="grid g2">
+          <div class="field"><label>Website</label>
+            <select x-model="dbForm.site_id" required><option value="">— choose —</option>
+              <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+          <div class="field"><label>Name (prefixed with the site user)</label><input x-model="dbForm.name" placeholder="main" pattern="[a-z0-9_]{1,32}" required></div>
+        </div>
+        <div class="row"><button class="btn primary" :disabled="busy">Create database + user</button>
+          <a class="btn" href="/phpmyadmin/" target="_blank">phpMyAdmin ↗</a></div>
+      </form>
+      <div class="card secret" x-show="dbCreds" x-cloak>
+        <div class="row between"><b>Save these credentials — the password is shown only once.</b><button class="btn sm" @click="dbCreds=null">✕</button></div>
+        <template x-if="dbCreds"><div class="mono small mt">
+          DB_NAME=<code x-text="dbCreds.name"></code><br>DB_USER=<code x-text="dbCreds.user"></code><br>
+          DB_PASS=<code x-text="dbCreds.password"></code><br>DB_HOST=<code x-text="dbCreds.host"></code></div></template>
+      </div>
+      <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+        <thead><tr><th>Database / user</th><th>Website</th><th>Size</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="d in dbs" :key="d.id"><tr>
+            <td class="mono small" x-text="d.name"></td><td x-text="d.domain||'—'"></td><td x-text="fmtBytes(d.size)"></td>
+            <td><div class="actions"><button class="btn sm" @click="resetDbPw(d)">New password</button>
+              <button class="btn sm danger" @click="deleteDb(d)">Drop</button></div></td></tr></template>
+          <tr x-show="!dbs.length"><td colspan="4" class="muted">No databases yet.</td></tr>
+        </tbody></table></div></div>
+    </section>
+
+    <!-- ========== FILES ========== -->
+    <section x-show="page==='files'">
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <select x-model="fm.site_id" @change="fmList('public_html')" style="width:auto;min-width:200px">
+            <template x-for="s in sites"><option :value="s.id" x-text="s.domain" :selected="s.id==fm.site_id"></option></template></select>
+          <div class="crumbs">
+            <button @click="fmList('')">~</button>
+            <template x-for="c in fmCrumbs()"><span>/<button @click="fmList(c.path)" x-text="c.name"></button></span></template>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <button class="btn sm" @click="fmUp()" :disabled="!fm.path">↑ Up</button>
+          <button class="btn sm" @click="fmList()">⟳</button>
+          <button class="btn sm" @click="fmMkdir()">＋ Folder</button>
+          <button class="btn sm" @click="fmNewFile()">＋ File</button>
+          <label class="btn sm" style="margin:0">⇪ Upload<input type="file" multiple hidden @change="fmUpload"></label>
+          <button class="btn sm" @click="fmCompress()" :disabled="!fm.sel.length">Zip selected</button>
+          <button class="btn sm danger" @click="fmDelete()" :disabled="!fm.sel.length">Delete selected</button>
+        </div>
+        <p class="muted small" x-show="fm.truncated">Showing first 5000 items.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th style="width:30px"><input type="checkbox" @change="fmToggleAll"></th><th>Name</th><th>Size</th><th class="hide-sm">Perms</th><th class="hide-sm">Modified</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="it in fm.items" :key="it.name"><tr>
+              <td><input type="checkbox" :value="it.name" x-model="fm.sel"></td>
+              <td><span class="fname" @click="fmOpen(it)"><span x-text="it.dir?'📁 ':(it.link?'🔗 ':'📄 ')"></span><span x-text="it.name"></span></span></td>
+              <td class="small" x-text="it.dir?'—':fmtBytes(it.size)"></td>
+              <td class="mono small hide-sm"><a href="#" @click.prevent="fmChmod(it)" x-text="it.mode"></a></td>
+              <td class="muted small hide-sm" x-text="fmtDate(it.mtime)"></td>
+              <td><div class="actions">
+                <button class="btn sm" x-show="isArchive(it.name) && !it.dir" @click="fmExtract(it)">Extract</button>
+                <a class="btn sm" x-show="!it.dir" :href="fmDownloadUrl(it)">⬇</a>
+                <button class="btn sm" @click="fmRename(it)">Rename</button>
+                <button class="btn sm danger" @click="fmDelete([it.name])">✕</button></div></td>
+            </tr></template>
+            <tr x-show="!fm.items.length"><td colspan="6" class="muted">Empty folder.</td></tr>
+          </tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ========== CRON ========== -->
+    <section x-show="page==='cron'">
+      <form class="card" @submit.prevent="addCron">
+        <h3>Add cron job</h3>
+        <div class="grid g2">
+          <div class="field"><label>Website (runs as its system user)</label>
+            <select x-model="cronForm.site_id" required><option value="">— choose —</option>
+              <template x-for="s in sites"><option :value="s.id" x-text="s.domain" :selected="s.id==cronForm.site_id"></option></template></select></div>
+          <div class="field"><label>Schedule</label>
+            <div class="row" style="flex-wrap:nowrap"><select @change="cronForm.schedule=$event.target.value" style="width:auto">
+              <option value="">Presets…</option><template x-for="p in cronPresets"><option :value="p[1]" x-text="p[0]"></option></template></select>
+              <input class="mono" x-model="cronForm.schedule" required></div></div>
+        </div>
+        <div class="field"><label>Command</label>
+          <input class="mono" x-model="cronForm.command" placeholder="php /home/example.com/public_html/cron.php >/dev/null 2>&1" required></div>
+        <button class="btn primary" :disabled="busy">Add</button>
+      </form>
+      <div class="card" style="padding:0">
+        <div class="row" style="padding:12px 14px"><select x-model="cronSite" @change="loadCrons()" style="width:auto">
+          <option value="">All websites</option><template x-for="s in sites"><option :value="s.id" x-text="s.domain" :selected="s.id==cronSite"></option></template></select></div>
+        <div class="table-wrap" style="border:0;border-top:1px solid var(--border)"><table>
+          <thead><tr><th>Site</th><th>Schedule</th><th>Command</th><th>On</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="c in crons" :key="c.id"><tr>
+              <td class="small" x-text="c.domain"></td><td class="mono small" style="white-space:nowrap" x-text="c.schedule"></td>
+              <td class="mono small" style="word-break:break-all" x-text="c.command"></td>
+              <td><input type="checkbox" :checked="!!c.enabled" @change="toggleCron(c)"></td>
+              <td><div class="actions"><button class="btn sm" @click="editCron(c)">Edit</button><button class="btn sm danger" @click="deleteCron(c)">✕</button></div></td>
+            </tr></template>
+            <tr x-show="!crons.length"><td colspan="5" class="muted">No cron jobs.</td></tr>
+          </tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ========== BACKUPS ========== -->
+    <section x-show="page==='backups'">
+      <div class="card">
+        <div class="row">
+          <select x-model="bkSite" @change="loadBackups()" style="width:auto;min-width:200px">
+            <option value="">All websites</option><template x-for="s in sites"><option :value="s.id" x-text="s.domain" :selected="s.id==bkSite"></option></template></select>
+          <button class="btn primary" @click="backupNow()" :disabled="busy || !bkSite">Backup now</button>
+          <button class="btn" x-show="settings.remote && settings.remote.enabled || remoteFiles" @click="loadRemoteFiles()" :disabled="!bkSite">☁ Remote copies</button>
+        </div>
+        <p class="muted small mt" style="margin-bottom:0">Archives contain <code>public_html</code> + SQL dumps of linked databases. Stored in <code>/var/backups/ypanel</code>. Schedule &amp; retention in Settings.</p>
+      </div>
+      <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+        <thead><tr><th>Site</th><th>Date</th><th>Size</th><th>Status</th><th class="hide-sm">Remote</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="b in backups" :key="b.id"><tr>
+            <td x-text="b.domain||'—'"></td><td class="small" x-text="fmtDate(b.created)"></td><td class="small" x-text="fmtBytes(b.size)"></td>
+            <td><span class="badge" :class="{ok:b.status==='done',warn:b.status==='running'||b.status==='restoring',err:b.status==='failed'}" x-text="b.status"></span>
+              <div class="muted small" x-text="b.note"></div></td>
+            <td class="hide-sm"><span class="badge" x-show="b.remote" :class="{ok:b.remote==='uploaded',warn:b.remote==='uploading',err:(b.remote||'').startsWith('failed')}"
+                x-text="(b.remote||'').startsWith('failed')?'failed':b.remote" :title="b.remote"></span></td>
+            <td><div class="actions" x-show="b.status==='done'">
+              <button class="btn sm" x-show="settings.remote && settings.remote.enabled && b.remote!=='uploaded'" @click="uploadBackup(b)" title="Upload to remote">☁↑</button>
+              <a class="btn sm" :href="`/api/backups/${b.id}/download`">⬇</a>
+              <button class="btn sm" @click="restoreBackup(b)">Restore</button>
+              <button class="btn sm danger" @click="deleteBackup(b)">✕</button></div>
+              <div class="actions" x-show="b.status==='failed'"><button class="btn sm danger" @click="deleteBackup(b)">✕</button></div></td>
+          </tr></template>
+          <tr x-show="!backups.length"><td colspan="6" class="muted">No backups yet.</td></tr>
+        </tbody></table></div></div>
+    </section>
+
+    <!-- remote copies -->
+    <section x-show="page==='backups' && remoteFiles" x-cloak>
+      <div class="card" style="padding:0">
+        <div class="row between" style="padding:12px 14px"><b>Remote copies — <span x-text="siteName(bkSite)"></span></b>
+          <button class="btn sm" @click="remoteFiles=null">✕</button></div>
+        <div class="table-wrap" style="border:0;border-top:1px solid var(--border)"><table><tbody>
+          <template x-for="f in (remoteFiles||[])" :key="f.name"><tr>
+            <td class="mono small" x-text="f.name"></td><td class="small" x-text="fmtBytes(f.size)"></td>
+            <td><div class="actions"><button class="btn sm" @click="fetchRemote(f)">⬇ Fetch to server</button></div></td></tr></template>
+          <tr x-show="remoteFiles && !remoteFiles.length"><td class="muted">No remote backups for this site.</td></tr>
+        </tbody></table></div>
+        <p class="muted small" style="padding:0 14px 12px">Fetched backups appear in the list above — then use Restore.</p>
+      </div>
+    </section>
+
+    <!-- ========== DNS (Cloudflare) ========== -->
+    <section x-show="page==='dns'">
+      <div class="card" x-show="!zones.length"><p class="muted" style="margin:0">No zones loaded. Add a Cloudflare API token in <a href="#" @click.prevent="go('settings')">Settings</a>
+        (permissions: Zone·Zone Read, Zone·DNS Edit, Zone·Zone Settings Edit, Zone·Cache Purge).</p></div>
+      <div class="row" style="margin-bottom:14px" x-show="zones.length">
+        <select @change="openZone(zones.find(z=>z.id===$event.target.value))" style="width:auto;min-width:220px">
+          <template x-for="z in zones" :key="z.id"><option :value="z.id" x-text="z.name" :selected="zone && z.id===zone.id"></option></template></select>
+        <span class="badge" x-show="zone" :class="zone&&zone.status==='active'?'ok':'warn'" x-text="zone&&zone.status"></span>
+        <span class="muted small" x-text="zone&&zone.plan"></span>
+      </div>
+      <template x-if="zone"><div>
+        <div class="grid g2">
+          <div class="card"><h3>Zone settings</h3>
+            <div class="grid g2" style="gap:10px">
+              <div class="field"><label>SSL mode</label><select @change="setZone('ssl',$event.target.value)">
+                <template x-for="v in ['off','flexible','full','strict']"><option :value="v" x-text="v==='strict'?'full (strict) ✓':v" :selected="zoneSet.ssl===v"></option></template></select></div>
+              <div class="field"><label>Security level</label><select @change="setZone('security_level',$event.target.value)">
+                <template x-for="v in ['essentially_off','low','medium','high','under_attack']"><option :value="v" x-text="v" :selected="zoneSet.security_level===v"></option></template></select></div>
+              <div class="field"><label>Min TLS</label><select @change="setZone('min_tls_version',$event.target.value)">
+                <template x-for="v in ['1.0','1.1','1.2','1.3']"><option :value="v" x-text="v" :selected="zoneSet.min_tls_version===v"></option></template></select></div>
+            </div>
+            <div class="row" style="gap:18px">
+              <label class="check"><input type="checkbox" :checked="zoneSet.always_use_https==='on'" @change="setZone('always_use_https',$event.target.checked?'on':'off')"> Always use HTTPS</label>
+              <label class="check"><input type="checkbox" :checked="zoneSet.development_mode==='on'" @change="setZone('development_mode',$event.target.checked?'on':'off')"> Development mode (no cache)</label>
+            </div>
+          </div>
+          <div class="card"><h3>Cache</h3>
+            <button class="btn danger" @click="purgeAll()">Purge everything</button>
+            <div class="field mt"><label>Purge specific URLs (one per line, max 30)</label>
+              <textarea class="code" style="min-height:80px" x-model="purgeUrls" :placeholder="'https://'+zone.name+'/manga/one-piece/'"></textarea></div>
+            <button class="btn" @click="purgeUrlsNow()" :disabled="!purgeUrls.trim()">Purge URLs</button>
+          </div>
+        </div>
+
+        <form class="card" x-show="recForm" x-cloak @submit.prevent="saveRecord">
+          <template x-if="recForm"><div>
+            <h3 x-text="recForm.id?'Edit record':'New record'"></h3>
+            <div class="grid g4">
+              <div class="field"><label>Type</label><select x-model="recForm.type"><template x-for="t in recTypes"><option :value="t" x-text="t" :selected="t===recForm.type"></option></template></select></div>
+              <div class="field"><label>Name (@ = root)</label><input class="mono" x-model="recForm.name" :placeholder="zone.name" required></div>
+              <div class="field" style="grid-column:span 2"><label>Content</label><input class="mono" x-model="recForm.content" required></div>
+              <div class="field"><label>TTL (1 = auto)</label><input type="number" x-model="recForm.ttl"></div>
+              <div class="field" x-show="recForm.type==='MX'"><label>Priority</label><input type="number" x-model="recForm.priority"></div>
+              <div class="field"><label>Comment</label><input x-model="recForm.comment"></div>
+            </div>
+            <label class="check" x-show="['A','AAAA','CNAME'].includes(recForm.type)" style="margin-bottom:12px"><input type="checkbox" x-model="recForm.proxied"> Proxied (orange cloud)</label>
+            <div class="row"><button class="btn primary" :disabled="busy">Save</button><button type="button" class="btn" @click="recForm=null">Cancel</button></div>
+          </div></template>
+        </form>
+
+        <div class="card" style="padding:0">
+          <div class="row" style="padding:12px 14px">
+            <input x-model="recFilter" placeholder="Filter records…" style="max-width:260px">
+            <button class="btn primary" @click="newRecord()">＋ Record</button>
+            <button class="btn sm" @click="loadRecords()">⟳</button>
+          </div>
+          <div class="table-wrap" style="border:0;border-top:1px solid var(--border)"><table>
+            <thead><tr><th>Type</th><th>Name</th><th>Content</th><th>Proxy</th><th class="hide-sm">TTL</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="r in filteredRecords()" :key="r.id"><tr>
+                <td><span class="badge" x-text="r.type"></span></td>
+                <td class="mono small" style="word-break:break-all" x-text="r.name"></td>
+                <td class="mono small" style="word-break:break-all;max-width:320px" x-text="(r.type==='MX'?r.priority+' ':'')+r.content"></td>
+                <td><button class="btn sm" x-show="r.proxiable" @click="toggleProxy(r)" :title="r.proxied?'Proxied':'DNS only'" x-text="r.proxied?'🟠':'⚪'"></button></td>
+                <td class="small hide-sm" x-text="r.ttl===1?'auto':r.ttl"></td>
+                <td><div class="actions"><button class="btn sm" @click="editRecord(r)">Edit</button><button class="btn sm danger" @click="deleteRecord(r)">✕</button></div></td>
+              </tr></template>
+              <tr x-show="!records.length"><td colspan="6" class="muted">No records.</td></tr>
+            </tbody></table></div>
+        </div>
+      </div></template>
+    </section>
+
+    <!-- ========== FIREWALL ========== -->
+    <section x-show="page==='firewall'">
+      <div class="card">
+        <div class="row between">
+          <div class="row"><h3 style="margin:0">UFW firewall</h3>
+            <span class="badge" :class="fw.active?'ok':'err'" x-text="fw.active?'active':'inactive'"></span></div>
+          <div class="row"><button class="btn sm" x-show="!fw.active" @click="fwToggle(true)">Enable</button>
+            <button class="btn sm danger" x-show="fw.active" @click="fwToggle(false)">Disable</button>
+            <button class="btn sm" @click="loadFw()">⟳</button></div>
+        </div>
+        <p class="muted small" style="margin:8px 0 0">Protected ports (can't be deleted here): <span class="mono" x-text="fw.protected.join(', ')"></span></p>
+      </div>
+      <div class="grid g2">
+        <form class="card" @submit.prevent="fwAdd">
+          <h3>Add rule</h3>
+          <div class="grid g2" style="gap:10px">
+            <div class="field"><label>Action</label><select x-model="fwForm.action"><option value="allow">Allow</option><option value="deny">Deny</option><option value="limit">Limit (rate)</option></select></div>
+            <div class="field"><label>Protocol</label><select x-model="fwForm.proto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="any">Any</option></select></div>
+            <div class="field"><label>Port or range</label><input class="mono" x-model="fwForm.port" placeholder="3306 or 6000:6100"></div>
+            <div class="field"><label>From IP / CIDR (empty = anywhere)</label><input class="mono" x-model="fwForm.source" placeholder="1.2.3.4"></div>
+          </div>
+          <button class="btn primary" :disabled="busy">Add rule</button>
+        </form>
+        <form class="card" @submit.prevent="fwBlock">
+          <h3>Block an IP</h3>
+          <p class="muted small">Drops all traffic from an IP or range (abusive scrapers, attackers). Placed before all allow rules.</p>
+          <div class="field"><input class="mono" x-model="blockIp" placeholder="203.0.113.7 or 203.0.113.0/24" required></div>
+          <button class="btn danger" :disabled="busy">Block</button>
+        </form>
+      </div>
+      <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+        <thead><tr><th>#</th><th>To</th><th>Action</th><th>From</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="r in fw.rules" :key="r.num"><tr>
+            <td class="muted small" x-text="r.num"></td><td class="mono small" x-text="r.to"></td>
+            <td><span class="badge" :class="r.action==='ALLOW'?'ok':(r.action==='LIMIT'?'warn':'err')" x-text="r.action+' '+r.dir"></span></td>
+            <td class="mono small" x-text="r.from"></td>
+            <td><div class="actions"><button class="btn sm danger" @click="fwDelete(r)">✕</button></div></td></tr></template>
+          <tr x-show="!fw.rules.length"><td colspan="5" class="muted" x-text="fw.available?'No rules (or firewall inactive).':'ufw is not installed.'"></td></tr>
+        </tbody></table></div></div>
+      <div class="card"><h3>fail2ban</h3>
+        <template x-for="(j, name) in fw.jails" :key="name"><div style="margin-bottom:12px">
+          <div class="row"><b class="mono" x-text="name"></b><span class="muted small" x-text="`${j.banned.length} banned now · ${j.total} total`"></span></div>
+          <div class="row mt" style="gap:6px"><template x-for="ip in j.banned" :key="ip">
+            <span class="badge err">
+              <span class="mono" x-text="ip"></span>
+              <a href="#" @click.prevent="unban(name, ip)" title="Unban" style="color:inherit;margin-left:6px">✕</a></span></template></div>
+        </div></template>
+        <p class="muted small" x-show="!Object.keys(fw.jails).length" style="margin:0">fail2ban is not running.</p>
+      </div>
+    </section>
+
+    <!-- ========== EMAIL ========== -->
+    <section x-show="page==='mail'">
+      <!-- not installed -->
+      <div class="grid g2" x-show="!mail.installed">
+        <div class="card">
+          <h3>Install the mail server</h3>
+          <p class="muted small">Postfix (SMTP) + Dovecot (IMAP/POP3) + Rspamd (spam filter + DKIM) + Roundcube webmail. Uses ~300 MB RAM.</p>
+          <div class="field"><label>Mail hostname</label><input class="mono" x-model="mailHost" placeholder="mail.yourdomain.com" :disabled="mail.setup==='running'"></div>
+          <p class="muted small">Create an <b>A record</b> for it pointing to this server (grey cloud, not proxied). Ask your VPS provider to set the <b>reverse DNS (PTR)</b> of the IP to this hostname.</p>
+          <div class="row"><button class="btn primary" @click="installMail()" :disabled="busy || mail.setup==='running' || !mailHost">Install</button>
+            <button class="btn" @click="runMailChecks()">Check server</button></div>
+          <div class="mt" x-show="mail.setup==='running'"><span class="badge warn">Installing… 2-5 min</span></div>
+          <div class="mt" x-show="mail.setup==='failed'"><span class="badge err">Setup failed — see the log</span></div>
+        </div>
+        <div class="card" x-show="mail.log"><h3>Setup log</h3><pre style="max-height:340px" x-text="mail.log"></pre></div>
+      </div>
+      <div class="card" x-show="mailChecks" x-cloak><template x-if="mailChecks"><div>
+        <h3>Deliverability checks</h3>
+        <table><tbody>
+          <tr><td class="muted">Outbound port 25</td><td><span class="badge" :class="mailChecks.port25?'ok':'err'" x-text="mailChecks.port25?'open':'BLOCKED'"></span>
+            <div class="muted small" x-text="mailChecks.port25?mailChecks.port25_banner:'Your VPS provider blocks port 25 — ask them to open it, or relay via an SMTP service (Brevo, SES…).'"></div></td></tr>
+          <tr><td class="muted">Reverse DNS (PTR)</td><td><span class="badge" :class="mailChecks.ptr_ok?'ok':'warn'" x-text="mailChecks.ptr||'none'"></span>
+            <div class="muted small" x-show="!mailChecks.ptr_ok" x-text="`Should be ${mailChecks.hostname||'your mail hostname'} — set it in your VPS provider panel.`"></div></td></tr>
+          <tr><td class="muted">Hostname A record</td><td><span class="badge" :class="mailChecks.host_a===mailChecks.ip?'ok':'warn'" x-text="mailChecks.host_a||'not found'"></span>
+            <span class="muted small" x-text="'server IP '+mailChecks.ip"></span></td></tr>
+        </tbody></table></div></template></div>
+
+      <!-- installed -->
+      <div x-show="mail.installed">
+        <div class="card">
+          <div class="row between">
+            <div class="row"><b class="mono" x-text="mail.hostname"></b>
+              <template x-for="(st, name) in mail.services" :key="name"><span class="badge" :class="st==='active'?'ok':'err'" x-text="name"></span></template></div>
+            <div class="row">
+              <span class="badge" :class="mail.cert?'ok':'warn'" x-text="mail.cert?('TLS until '+mail.cert.expires.split(' ').slice(0,2).join(' ')):'self-signed TLS'"></span>
+              <button class="btn sm" @click="mailTls()" :disabled="busy" x-text="mail.cert?'Renew TLS':'Get TLS certificate'"></button>
+              <button class="btn sm" @click="runMailChecks()">Checks</button>
+              <a class="btn sm" x-show="mail.webmail" :href="mail.cert?('https://'+mail.hostname+'/'):'/webmail/'" target="_blank">Webmail ↗</a>
+            </div>
+          </div>
+          <p class="muted small" style="margin:8px 0 0">Clients: IMAP <b x-text="mail.hostname"></b>:993 (SSL) · POP3 :995 · SMTP :587 (STARTTLS) or :465 (SSL) · username = full email address.</p>
+        </div>
+        <div class="tabs">
+          <template x-for="t in [['domains','Domains'],['mailboxes','Mailboxes'],['aliases','Forwarders'],['queue','Queue']]">
+            <button class="tab" :class="{active:mailTab===t[0]}" @click="mailTabOpen(t[0])" x-text="t[1]"></button></template>
+        </div>
+        <div class="card secret" x-show="mailCreds" x-cloak><template x-if="mailCreds"><div class="row between">
+          <div class="mono small">Save it — shown once: <code x-text="mailCreds.address"></code> · <code x-text="mailCreds.password"></code></div>
+          <button class="btn sm" @click="mailCreds=null">✕</button></div></template></div>
+
+        <div x-show="mailTab==='domains'">
+          <form class="card" @submit.prevent="addMailDomain">
+            <h3>Add email domain</h3>
+            <div class="grid g2">
+              <div class="field"><label>Domain</label><input class="mono" x-model="mdomForm.domain" placeholder="example.com" required></div>
+              <div class="field"><label>Linked website (optional)</label><select x-model="mdomForm.site_id"><option value="">—</option>
+                <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+            </div>
+            <button class="btn primary" :disabled="busy">Add domain</button>
+          </form>
+          <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+            <thead><tr><th>Domain</th><th>Mailboxes</th><th>Forwarders</th><th>DKIM</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="d in mdomains" :key="d.id"><tr>
+                <td x-text="d.domain"></td><td x-text="d.boxes"></td><td x-text="d.aliases"></td>
+                <td><span class="badge" :class="d.dkim?'ok':'err'" x-text="d.dkim?'key ready':'missing'"></span></td>
+                <td><div class="actions"><button class="btn sm" @click="showMailDns(d, true)">DNS records</button>
+                  <button class="btn sm danger" @click="deleteMailDomain(d)">✕</button></div></td></tr></template>
+              <tr x-show="!mdomains.length"><td colspan="5" class="muted">No email domains yet.</td></tr>
+            </tbody></table></div></div>
+          <div class="card" x-show="mdns" x-cloak><template x-if="mdns"><div>
+            <div class="row between"><h3 style="margin:0" x-text="'DNS for '+mdnsDomain.domain"></h3>
+              <div class="row"><button class="btn sm" @click="showMailDns(mdnsDomain, true)">⟳ Check</button>
+                <button class="btn sm primary" @click="mailDnsCloudflare()" :disabled="busy">Create on Cloudflare</button>
+                <button class="btn sm" @click="mdns=null">✕</button></div></div>
+            <div class="table-wrap mt"><table>
+              <thead><tr><th>Type</th><th>Name</th><th>Value</th><th>Live</th></tr></thead>
+              <tbody><template x-for="r in mdns"><tr>
+                <td><span class="badge" x-text="r.type"></span></td>
+                <td class="mono small" style="word-break:break-all" x-text="r.name"></td>
+                <td class="mono small" style="word-break:break-all;max-width:420px;user-select:all" x-text="(r.type==='MX'?r.priority+' ':'')+r.content"></td>
+                <td><span class="badge" x-show="r.ok!==undefined && r.ok!==null" :class="r.ok?'ok':'warn'" x-text="r.ok?'✓':'missing'"></span></td></tr></template></tbody>
+            </table></div>
+            <p class="muted small mt">The mail host A record must be <b>grey cloud</b> (DNS only). Mail can't go through Cloudflare's proxy.</p>
+          </div></template></div>
+        </div>
+
+        <div x-show="mailTab==='mailboxes'">
+          <form class="card" @submit.prevent="addMailbox">
+            <h3>New mailbox</h3>
+            <div class="grid g4">
+              <div class="field"><label>Address</label><input class="mono" x-model="mboxForm.local" placeholder="contact" required></div>
+              <div class="field"><label>@ Domain</label><select x-model="mboxForm.domain_id" required><option value="">—</option>
+                <template x-for="d in mdomains"><option :value="d.id" x-text="d.domain"></option></template></select></div>
+              <div class="field"><label>Password (empty = generate)</label><input class="mono" x-model="mboxForm.password" autocomplete="new-password"></div>
+              <div class="field"><label>Quota MB (0 = unlimited)</label><input type="number" min="0" x-model="mboxForm.quota_mb"></div>
+            </div>
+            <button class="btn primary" :disabled="busy">Create mailbox</button>
+          </form>
+          <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+            <thead><tr><th>Mailbox</th><th>Usage</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="m in mboxes" :key="m.id"><tr>
+                <td class="mono small" x-text="m.address"></td>
+                <td class="small"><span x-text="fmtBytes(m.used)"></span><span class="muted" x-text="m.quota_mb?(' / '+m.quota_mb+' MB'):' / ∞'"></span>
+                  <div class="bar" x-show="m.quota_mb" style="margin-top:4px;max-width:140px"><i :class="barClass(m.used/(m.quota_mb*10485.76))" :style="`width:${Math.min(100, m.used/(m.quota_mb*10485.76))}%`"></i></div></td>
+                <td><span class="badge" :class="m.enabled?'ok':'err'" x-text="m.enabled?'active':'suspended'"></span></td>
+                <td><div class="actions"><button class="btn sm" @click="mailboxPw(m)">Password</button><button class="btn sm" @click="mailboxQuota(m)">Quota</button>
+                  <button class="btn sm" @click="mailboxToggle(m)" x-text="m.enabled?'Suspend':'Activate'"></button>
+                  <button class="btn sm danger" @click="deleteMailbox(m)">✕</button></div></td></tr></template>
+              <tr x-show="!mboxes.length"><td colspan="4" class="muted">No mailboxes yet.</td></tr>
+            </tbody></table></div></div>
+        </div>
+
+        <div x-show="mailTab==='aliases'">
+          <form class="card" @submit.prevent="addAlias">
+            <h3>New forwarder</h3>
+            <div class="grid g4">
+              <div class="field"><label>Address (* = catch-all)</label><input class="mono" x-model="maliasForm.local" placeholder="sales" required></div>
+              <div class="field"><label>@ Domain</label><select x-model="maliasForm.domain_id" required><option value="">—</option>
+                <template x-for="d in mdomains"><option :value="d.id" x-text="d.domain"></option></template></select></div>
+              <div class="field" style="grid-column:span 2"><label>Forward to (comma separated)</label>
+                <input class="mono" x-model="maliasForm.destinations" placeholder="you@gmail.com, info@example.com" required></div>
+            </div>
+            <button class="btn primary" :disabled="busy">Create forwarder</button>
+            <span class="muted small" style="margin-left:8px">Mailboxes listed as targets can also send as this address.</span>
+          </form>
+          <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+            <thead><tr><th>From</th><th>Forwards to</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="a in maliases" :key="a.id"><tr>
+                <td class="mono small" x-text="a.source.startsWith('@')?('* (catch-all) '+a.source):a.source"></td>
+                <td class="mono small" style="word-break:break-all" x-text="a.destinations.split(',').join(', ')"></td>
+                <td><div class="actions"><button class="btn sm" @click="editAlias(a)">Edit</button><button class="btn sm danger" @click="deleteAlias(a)">✕</button></div></td></tr></template>
+              <tr x-show="!maliases.length"><td colspan="3" class="muted">No forwarders.</td></tr>
+            </tbody></table></div></div>
+        </div>
+
+        <div x-show="mailTab==='queue'">
+          <div class="card"><div class="row between"><span class="muted" x-text="mqueue.length+' message(s) waiting'"></span>
+            <div class="row"><button class="btn sm" @click="mailTabOpen('queue')">⟳</button><button class="btn sm" @click="flushQueue()">Retry all</button>
+              <button class="btn sm danger" x-show="mqueue.length" @click="deleteQueued('ALL')">Delete all</button></div></div></div>
+          <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+            <thead><tr><th>ID</th><th>From</th><th>To / reason</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="q in mqueue" :key="q.id"><tr>
+                <td class="mono small" x-text="q.id"></td><td class="small" x-text="q.sender"></td>
+                <td class="small"><template x-for="r in q.recipients"><div><span class="mono" x-text="r.address"></span>
+                  <div class="muted" x-text="r.reason"></div></div></template></td>
+                <td><div class="actions"><button class="btn sm danger" @click="deleteQueued(q.id)">✕</button></div></td></tr></template>
+              <tr x-show="!mqueue.length"><td colspan="4" class="muted">Queue is empty.</td></tr>
+            </tbody></table></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== USERS ========== -->
+    <section x-show="page==='users'">
+      <div class="row between" style="margin-bottom:14px">
+        <span class="muted">Admins manage everything. Site users only see the websites you assign them (files, DBs, cron, backups, SFTP, cache, stats).</span>
+        <button class="btn primary" @click="newUser()">＋ New user</button>
+      </div>
+      <div class="card secret" x-show="userCreds" x-cloak><template x-if="userCreds"><div class="row between">
+        <div class="mono small">Login for <b x-text="userCreds.username"></b>: password <code x-text="userCreds.password"></code> — shown once</div>
+        <button class="btn sm" @click="userCreds=null">✕</button></div></template></div>
+      <form class="card" x-show="userForm" x-cloak @submit.prevent="saveUser"><template x-if="userForm"><div>
+        <h3 x-text="userForm.id?('Edit '+userForm.username):'New user'"></h3>
+        <div class="grid g2">
+          <div class="field" x-show="!userForm.id"><label>Username</label><input class="mono" x-model="userForm.username" :required="!userForm.id"></div>
+          <div class="field"><label x-text="userForm.id?'New password (empty = keep)':'Password (empty = generate)'"></label>
+            <input class="mono" x-model="userForm.password" autocomplete="new-password"></div>
+          <div class="field"><label>Role</label><select x-model="userForm.role"><option value="user">Site user</option><option value="admin">Admin</option></select></div>
+        </div>
+        <div class="field" x-show="userForm.role==='user'"><label>Websites this user can manage</label>
+          <div class="row" style="gap:14px"><template x-for="s in sites" :key="s.id">
+            <label class="check"><input type="checkbox" :value="String(s.id)" x-model="userForm.sites"> <span x-text="s.domain"></span></label></template></div></div>
+        <div class="row"><button class="btn primary" :disabled="busy">Save</button><button type="button" class="btn" @click="userForm=null">Cancel</button></div>
+      </div></template></form>
+      <div class="card" style="padding:0"><div class="table-wrap" style="border:0"><table>
+        <thead><tr><th>User</th><th>Role</th><th>Websites</th><th>2FA</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="u in users" :key="u.id"><tr>
+            <td><b x-text="u.username"></b> <span class="muted small" x-show="u.username===me">(you)</span></td>
+            <td><span class="badge" :class="u.role==='admin'?'ok':''" x-text="u.role"></span></td>
+            <td class="small" x-text="u.role==='admin'?'all':(u.domains.join(', ')||'—')"></td>
+            <td><span class="badge" :class="u.totp?'ok':'warn'" x-text="u.totp?'on':'off'"></span></td>
+            <td><div class="actions"><button class="btn sm" @click="editUser(u)">Edit</button>
+              <button class="btn sm" @click="resetUserPw(u)">New password</button>
+              <button class="btn sm" x-show="u.totp" @click="resetUser2fa(u)">Reset 2FA</button>
+              <button class="btn sm danger" x-show="u.username!==me" @click="deleteUser(u)">✕</button></div></td></tr></template>
+        </tbody></table></div></div>
+    </section>
+
+    <!-- ========== INSTALLERS ========== -->
+    <section x-show="page==='installers'">
+      <div class="card secret" x-show="installResult" x-cloak>
+        <template x-if="installResult"><div>
+          <div class="row between"><b x-text="installResult.type+' installed ✔'"></b><button class="btn sm" @click="installResult=null">✕</button></div>
+          <div class="mono small mt">Site: <a :href="installResult.url" target="_blank" x-text="installResult.url"></a><br>
+            Admin: <a :href="installResult.admin_url" target="_blank" x-text="installResult.admin_url"></a><br>
+            User: <code x-text="installResult.user"></code> · Pass: <code x-text="installResult.pass"></code><br>DB: <code x-text="installResult.db"></code></div>
+        </div></template>
+      </div>
+      <div class="grid g2">
+        <form class="card" @submit.prevent="installWp">
+          <h3>WordPress</h3>
+          <div class="field"><label>Website</label><select x-model="wp.site_id" required><option value="">— choose —</option>
+            <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+          <div class="field"><label>Site title</label><input x-model="wp.title" required></div>
+          <div class="grid g2" style="gap:10px">
+            <div class="field"><label>Admin user</label><input x-model="wp.admin_user" required></div>
+            <div class="field"><label>Admin email</label><input type="email" x-model="wp.admin_email" required></div>
+          </div>
+          <div class="field"><label>Admin password</label>
+            <div class="row" style="flex-wrap:nowrap"><input class="mono" x-model="wp.admin_password" required minlength="10">
+              <button type="button" class="btn sm" @click="wp.admin_password=genPw()">Generate</button></div></div>
+          <div class="field"><label>Language</label><select x-model="wp.locale">
+            <option value="en_US">English</option><option value="fr_FR">Français</option><option value="ar">العربية</option>
+            <option value="es_ES">Español</option><option value="pt_BR">Português (BR)</option><option value="id_ID">Indonesia</option></select></div>
+          <label class="check" style="margin-bottom:12px"><input type="checkbox" x-model="wp.force"> Overwrite existing files in public_html</label>
+          <button class="btn primary" :disabled="busy">Install WordPress</button>
+        </form>
+        <div>
+          <form class="card" @submit.prevent="gitDeploy">
+            <h3>Deploy from Git</h3>
+            <div class="field"><label>Website</label><select x-model="git.site_id" required><option value="">— choose —</option>
+              <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+            <div class="field"><label>Repository (https)</label><input class="mono" x-model="git.repo" placeholder="https://github.com/user/repo.git" required></div>
+            <div class="field"><label>Branch (optional)</label><input class="mono" x-model="git.branch" placeholder="main"></div>
+            <label class="check" style="margin-bottom:12px"><input type="checkbox" x-model="git.force"> Overwrite existing files</label>
+            <button class="btn primary" :disabled="busy">Clone into public_html</button>
+          </form>
+          <form class="card" @submit.prevent="cloneSite">
+            <h3>Clone files from another site</h3>
+            <p class="muted small">Copies <code>public_html</code> — handy to spin up a new manga site from an existing CMS install.</p>
+            <div class="grid g2" style="gap:10px">
+              <div class="field"><label>From</label><select x-model="clone.source_id" required><option value="">—</option>
+                <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+              <div class="field"><label>To</label><select x-model="clone.target_id" required><option value="">—</option>
+                <template x-for="s in sites"><option :value="s.id" x-text="s.domain"></option></template></select></div>
+            </div>
+            <div class="field"><label>Exclude (comma separated)</label><input class="mono" x-model="clone.exclude" placeholder="data/*.sqlite, cache/, uploads/"></div>
+            <label class="check" style="margin-bottom:12px"><input type="checkbox" x-model="clone.force"> Overwrite existing files in target</label>
+            <button class="btn primary" :disabled="busy">Clone files</button>
+          </form>
+          <div class="card"><h3>Upload a ZIP</h3>
+            <p class="muted small" style="margin:0">For any custom CMS: open <a href="#" @click.prevent="go('files')">File Manager</a> → Upload the .zip into <code>public_html</code> → Extract.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SETTINGS ========== -->
+    <section x-show="page==='settings'">
+      <div class="grid g2">
+        <form class="card" x-show="isAdmin" @submit.prevent="saveSettings">
+          <h3>General</h3>
+          <div class="field"><label>Admin email (Let's Encrypt notices)</label><input type="email" x-model="settings.admin_email"></div>
+          <div class="field"><label>Server public IP <span class="muted" x-text="'(detected: '+(settings.detected_ip||'?')+')'"></span></label>
+            <input x-model="settings.server_ip" placeholder="auto"></div>
+          <div class="field"><label>Default PHP for new sites</label><select x-model="settings.default_php">
+            <option value="">Latest installed</option><template x-for="v in settings.php_versions||[]"><option :value="v" x-text="v" :selected="v===settings.default_php"></option></template></select></div>
+          <h3 class="mt" style="margin-top:18px">Backups</h3>
+          <div class="grid g2" style="gap:10px">
+            <div class="field"><label>Daily backup hour (0-23 or off)</label><input x-model="settings.backup_hour"></div>
+            <div class="field"><label>Keep last N per site</label><input type="number" min="1" max="60" x-model="settings.backup_keep"></div>
+          </div>
+          <div class="field"><label>Exclude paths (comma separated, relative)</label>
+            <input class="mono" x-model="settings.backup_exclude" placeholder="public_html/cache, public_html/wp-content/cache"></div>
+          <button class="btn primary" :disabled="busy">Save</button>
+        </form>
+        <div>
+          <div class="card" x-show="isAdmin && rserver">
+            <div class="row between"><h3 style="margin:0">Redis</h3>
+              <span class="badge" :class="rserver&&rserver.available?'ok':'err'" x-text="rserver&&rserver.available?('v'+rserver.version):'not installed'"></span></div>
+            <template x-if="rserver && rserver.available"><p class="small" style="margin:10px 0">
+              Memory <b x-text="rserver.used"></b> / <span x-text="rserver.maxmemory"></span> · <span x-text="rserver.keys"></span> keys ·
+              hit rate <b x-text="rserver.hits+rserver.misses?Math.round(rserver.hits*100/(rserver.hits+rserver.misses))+'%':'—'"></b> ·
+              <span x-text="rserver.sites"></span> site(s) using it</p></template>
+            <button class="btn sm" x-show="rserver && rserver.available" @click="setRedisMem()">Change max memory</button>
+          </div>
+          <form class="card" x-show="isAdmin" @submit.prevent="saveRemote">
+            <div class="row between"><h3 style="margin:0">Remote backups (S3)</h3>
+              <span class="badge" :class="remoteForm.enabled&&settings.remote&&settings.remote.secret_set?'ok':'warn'" x-text="remoteForm.enabled?'On':'Off'"></span></div>
+            <p class="muted small">Every backup is copied off-server after it finishes. Works with Cloudflare R2, Backblaze B2 (S3 API), Wasabi, AWS S3, MinIO.</p>
+            <p class="badge err" x-show="settings.remote && !settings.remote.rclone">rclone missing — re-run install.sh</p>
+            <div class="grid g2" style="gap:10px">
+              <div class="field"><label>Provider</label><select x-model="remoteForm.provider">
+                <option value="Cloudflare">Cloudflare R2</option><option value="Other">Backblaze B2 / MinIO / other</option>
+                <option value="Wasabi">Wasabi</option><option value="AWS">AWS S3</option></select></div>
+              <div class="field"><label>Region</label><input class="mono" x-model="remoteForm.region" placeholder="auto"></div>
+            </div>
+            <div class="field"><label>Endpoint</label><input class="mono" x-model="remoteForm.endpoint" placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com"></div>
+            <div class="grid g2" style="gap:10px">
+              <div class="field"><label>Bucket</label><input class="mono" x-model="remoteForm.bucket" required></div>
+              <div class="field"><label>Path prefix</label><input class="mono" x-model="remoteForm.prefix"></div>
+              <div class="field"><label>Access key ID</label><input class="mono" x-model="remoteForm.access_key" autocomplete="off" required></div>
+              <div class="field"><label>Secret key <span class="muted" x-show="settings.remote&&settings.remote.secret_set">(saved — leave empty)</span></label>
+                <input type="password" class="mono" x-model="remoteForm.secret" autocomplete="new-password"></div>
+              <div class="field"><label>Delete remote copies older than (days, 0 = never)</label><input type="number" min="0" x-model="remoteForm.keep_days"></div>
+            </div>
+            <label class="check" style="margin-bottom:12px"><input type="checkbox" x-model="remoteForm.enabled"> Upload backups automatically</label>
+            <div class="row"><button class="btn primary" :disabled="busy">Save</button>
+              <button type="button" class="btn" @click="testRemote()" :disabled="!(settings.remote&&settings.remote.secret_set)">Test connection</button></div>
+          </form>
+          <div class="card" x-show="isAdmin">
+            <h3>Cloudflare</h3>
+            <p class="muted small">API token with <b>Zone → DNS → Edit</b> and <b>Zone → Zone → Read</b>. Used for DNS records and DNS-01 SSL.</p>
+            <p><span class="badge" :class="settings.cf_token_set?'ok':'warn'" x-text="settings.cf_token_set?'Token configured':'Not configured'"></span></p>
+            <div class="field"><input type="password" class="mono" x-model="cfToken" placeholder="Paste API token" autocomplete="off"></div>
+            <div class="row"><button class="btn" @click="verifyCf()" :disabled="!cfToken && !settings.cf_token_set">Verify</button>
+              <button class="btn primary" @click="saveCf(false)" :disabled="!cfToken">Save token</button>
+              <button class="btn danger" x-show="settings.cf_token_set" @click="saveCf(true)">Remove</button></div>
+            <p class="muted small mt" x-show="cfInfo" x-text="cfInfo && ('Zones: '+cfInfo.zones.join(', '))"></p>
+          </div>
+          <form class="card" @submit.prevent="changePw">
+            <h3>Password</h3>
+            <div class="field"><label>Current</label><input type="password" x-model="pw.current" required autocomplete="current-password"></div>
+            <div class="field"><label>New (min 10 chars)</label><input type="password" x-model="pw.new" required minlength="10" autocomplete="new-password"></div>
+            <button class="btn primary" :disabled="busy">Change password</button>
+          </form>
+          <div class="card">
+            <div class="row between"><h3 style="margin:0">Two-factor authentication</h3>
+              <span class="badge" :class="tfa.enabled?'ok':'warn'" x-text="tfa.enabled?'On':'Off'"></span></div>
+            <div x-show="!tfa.enabled && !tfaSetup" class="mt">
+              <p class="muted small">Protect the panel with Google Authenticator, Authy, 2FAS or any TOTP app.</p>
+              <button class="btn primary" @click="tfaStart()">Set up 2FA</button></div>
+            <template x-if="tfaSetup"><div class="mt">
+              <p class="small">1. Scan with your authenticator app:</p>
+              <div style="background:#fff;border-radius:10px;padding:8px;width:200px;height:200px" x-html="tfaSetup.svg"></div>
+              <p class="muted small mt">Or enter this key manually: <code style="user-select:all" x-text="tfaSetup.secret"></code></p>
+              <p class="small">2. Enter the 6-digit code:</p>
+              <div class="row" style="flex-wrap:nowrap"><input class="mono" x-model="tfaCode" inputmode="numeric" maxlength="6" placeholder="123456" style="max-width:160px">
+                <button class="btn primary" @click="tfaEnable()" :disabled="tfaCode.length!==6">Activate</button>
+                <button class="btn" @click="tfaSetup=null">Cancel</button></div>
+            </div></template>
+            <div class="card secret mt" x-show="tfaCodes" x-cloak><template x-if="tfaCodes"><div>
+              <b>Recovery codes — save them now, each works once:</b>
+              <div class="mono small mt" style="columns:2"><template x-for="c in tfaCodes"><div><code x-text="c"></code></div></template></div>
+              <button class="btn sm mt" @click="tfaCodes=null">I saved them</button></div></template></div>
+            <div x-show="tfa.enabled" class="mt">
+              <p class="muted small" x-text="`${tfa.recovery_left} recovery code(s) left. Lost your phone? SSH: ypanel 2fa-off`"></p>
+              <div class="field"><input type="password" x-model="tfaPw" placeholder="Your password to confirm" autocomplete="current-password"></div>
+              <div class="row"><button class="btn" @click="tfaRegen()" :disabled="!tfaPw">New recovery codes</button>
+                <button class="btn danger" @click="tfaDisable()" :disabled="!tfaPw">Disable 2FA</button></div>
+            </div>
+          </div>
+          <p class="muted small">YPanel v<span x-text="settings.version"></span> · reset password from SSH: <code>ypanel passwd</code></p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ================= EDITOR ================= -->
+<div class="modal-bg" x-show="editor" x-cloak @keydown.escape.window="editor && closeEditor()">
+  <template x-if="editor">
+    <div class="modal">
+      <header><span class="mono small" x-text="editor.path + (editor.dirty?' •':'')"></span>
+        <div class="row"><button class="btn sm primary" @click="fmSave()">Save</button><button class="btn sm" @click="closeEditor()">Close</button></div></header>
+      <div class="body"><textarea class="code" x-model="editor.content" @input="editor.dirty=true" @keydown="editorKey" spellcheck="false"></textarea></div>
+    </div>
+  </template>
+</div>
+
+<div class="toasts"><template x-for="t in toasts" :key="t.id"><div class="toast" :class="t.type" x-text="t.msg"></div></template></div>
+</body>
+</html>
