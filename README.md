@@ -5,10 +5,20 @@ Lightweight cPanel-style hosting panel — nginx + PHP-FPM (multi-version) + Mar
 ## Install (fresh VPS — Ubuntu 22.04/24.04 or Debian 12)
 
 ```bash
-# upload ypanel-v3.0.0.zip to the server, then:
-apt-get install -y unzip && unzip ypanel-v3.0.0.zip && cd ypanel
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/yaya18888/ypanel/main/get.sh | bash
+```
+
+With options:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yaya18888/ypanel/main/get.sh | bash -s -- --with-mail=mail.example.com
 # options: --php="8.1 8.2 8.3" --default-php=8.3 --port=8090 --no-firewall --with-mail=mail.example.com
+```
+
+Update later (keeps sites, data and settings):
+
+```bash
+ypanel update
 ```
 
 Open `https://SERVER_IP:8090` — credentials are printed at the end and saved in `/root/ypanel-credentials.txt`.
@@ -48,6 +58,7 @@ ypanel migrate                # v1 → v2 (install.sh runs it automatically)
 ypanel info                   # list sites
 ypanel backup-all             # run backups now
 ypanel set admin_email you@example.com
+ypanel update                 # pull the latest version from GitHub
 ```
 
 ## Paths
@@ -62,9 +73,9 @@ ypanel set admin_email you@example.com
 - Behind Cloudflare proxy, set SSL mode to **Full (strict)** after issuing the certificate (Flexible causes redirect loops).
 - Panel uses a self-signed cert on port 8090; put it behind a Cloudflare-proxied hostname if you want a valid one.
 
-## Upgrade v1 → v2
+## Upgrading
 
-Upload the new zip and re-run `bash install.sh` — data, sites and settings are kept; DB columns are migrated and site homes become root-owned (required for the SFTP chroot).
+`ypanel update` (or re-running the curl command) pulls the latest code and re-runs the installer. Data, sites and settings are kept and the DB is migrated automatically.
 
 ## Cloudflare token permissions
 
@@ -76,7 +87,3 @@ Zone · Zone · Read, Zone · DNS · Edit, Zone · Zone Settings · Edit, Zone �
 - Set the server IP's reverse DNS (PTR) to the mail hostname in your VPS provider panel.
 - The mail host A record must be DNS-only (grey cloud).
 - Mail clients: IMAP 993 (SSL), POP3 995, SMTP 587 (STARTTLS) / 465 (SSL), username = full address.
-
-## Upgrade v2 → v3
-
-Re-run `bash install.sh` with the new zip (installs Redis, logrotate, scripts; migrates the DB). Mail is installed from the Email page or with `--with-mail=`.

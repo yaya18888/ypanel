@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # =====================================================================
 #  YPanel one-line installer / updater
-#    curl -fsSL https://raw.githubusercontent.com/__OWNER__/__REPO__/main/get.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/yaya18888/ypanel/main/get.sh | bash
 #  With options:
-#    curl -fsSL https://raw.githubusercontent.com/__OWNER__/__REPO__/main/get.sh | bash -s -- --with-mail=mail.example.com
+#    curl -fsSL https://raw.githubusercontent.com/yaya18888/ypanel/main/get.sh | bash -s -- --with-mail=mail.example.com
 #  Run the same command again to update (data and sites are kept).
 # =====================================================================
 set -euo pipefail
-REPO="${YPANEL_REPO:-https://github.com/__OWNER__/__REPO__.git}"
+REPO="${YPANEL_REPO:-https://github.com/yaya18888/ypanel.git}"
 BRANCH="${YPANEL_BRANCH:-main}"
 DIR=/usr/local/src/ypanel
 
